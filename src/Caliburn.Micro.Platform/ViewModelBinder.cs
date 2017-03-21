@@ -1,11 +1,19 @@
-﻿namespace Caliburn.Micro {
+﻿#if XFORMS
+namespace Caliburn.Micro.Xamarin.Forms
+#else
+namespace Caliburn.Micro
+#endif
+{
     using System;
     using System.Linq;
     using System.Collections.Generic;
     using System.Reflection;
-#if WinRT && !WinRT81
-    using Windows.UI.Xaml;
-    using Windows.UI.Interactivity;
+    using System.Threading.Tasks;
+#if XFORMS
+    using UIElement = global::Xamarin.Forms.Element;
+    using FrameworkElement = global::Xamarin.Forms.VisualElement;
+    using DependencyProperty = global::Xamarin.Forms.BindableProperty;
+    using DependencyObject = global::Xamarin.Forms.BindableObject;
 #elif WinRT81
     using Windows.UI.Xaml;
     using Microsoft.Xaml.Interactivity;
@@ -22,6 +30,8 @@
     /// Binds a view to a view model.
     /// </summary>
     public static class ViewModelBinder {
+        const string AsyncSuffix = "Async";
+
         static readonly ILog Log = LogManager.GetLog(typeof(ViewModelBinder));
 
         /// <summary>
@@ -36,12 +46,13 @@
         /// Indicates whether or not the conventions have already been applied to the view.
         /// </summary>
         public static readonly DependencyProperty ConventionsAppliedProperty =
-            DependencyProperty.RegisterAttached(
+            DependencyPropertyHelper.RegisterAttached(
                 "ConventionsApplied",
                 typeof(bool),
                 typeof(ViewModelBinder),
-                null
+                false
                 );
+
 
         /// <summary>
         /// Determines whether a view should have conventions applied to it.
@@ -58,8 +69,9 @@
         /// </summary>
         /// <remarks>Parameters include named Elements to search through and the type of view model to determine conventions for. Returns unmatched elements.</remarks>
         public static Func<IEnumerable<FrameworkElement>, Type, IEnumerable<FrameworkElement>> BindProperties = (namedElements, viewModelType) => {
-            var unmatchedElements = new List<FrameworkElement>();
 
+            var unmatchedElements = new List<FrameworkElement>();
+#if !XFORMS
             foreach (var element in namedElements) {
                 var cleanName = element.Name.Trim('_');
                 var parts = cleanName.Split(new[] { '_' }, StringSplitOptions.RemoveEmptyEntries);
@@ -101,8 +113,9 @@
                     unmatchedElements.Add(element);
                 }
             }
-
+#endif
             return unmatchedElements;
+
         };
 
         /// <summary>
@@ -110,29 +123,30 @@
         /// </summary>
         /// <remarks>Parameters include the named elements to search through and the type of view model to determine conventions for. Returns unmatched elements.</remarks>
         public static Func<IEnumerable<FrameworkElement>, Type, IEnumerable<FrameworkElement>> BindActions = (namedElements, viewModelType) => {
-#if WinRT
+            var unmatchedElements = namedElements.ToList();
+#if !XFORMS
+#if WinRT || XFORMS
             var methods = viewModelType.GetRuntimeMethods();
 #else
             var methods = viewModelType.GetMethods();
 #endif
-            var unmatchedElements = namedElements.ToList();
+            
 
             foreach (var method in methods) {
                 var foundControl = unmatchedElements.FindName(method.Name);
-                if (foundControl == null) {
+                if (foundControl == null && IsAsyncMethod(method)) {
+                    var methodNameWithoutAsyncSuffix = method.Name.Substring(0, method.Name.Length - AsyncSuffix.Length);
+                    foundControl = unmatchedElements.FindName(methodNameWithoutAsyncSuffix);
+                }
+
+                if(foundControl == null) {
                     Log.Info("Action Convention Not Applied: No actionable element for {0}.", method.Name);
                     continue;
                 }
 
                 unmatchedElements.Remove(foundControl);
 
-#if WinRT && !WinRT81
-                var triggers = Interaction.GetTriggers(foundControl);
-                if (triggers != null && triggers.Count > 0) {
-                    Log.Info("Action Convention Not Applied: Interaction.Triggers already set on {0}.", foundControl.Name);
-                    continue;
-                }
-#elif WinRT81
+#if WinRT81
                 var triggers = Interaction.GetBehaviors(foundControl);
                 if (triggers != null && triggers.Count > 0)
                 {
@@ -164,9 +178,14 @@
                 Log.Info("Action Convention Applied: Action {0} on element {1}.", method.Name, message);
                 Message.SetAttach(foundControl, message);
             }
-
+#endif
             return unmatchedElements;
         };
+
+        static bool IsAsyncMethod(MethodInfo method) {
+            return typeof(Task).IsAssignableFrom(method.ReturnType) &&
+                   method.Name.EndsWith(AsyncSuffix, StringComparison.OrdinalIgnoreCase);
+        }
 
         /// <summary>
         /// Allows the developer to add custom handling of named elements which were not matched by any default conventions.
@@ -178,7 +197,7 @@
         /// </summary>
         ///<remarks>Passes the the view model, view and creation context (or null for default) to use in applying binding.</remarks>
         public static Action<object, DependencyObject, object> Bind = (viewModel, view, context) => {
-#if !WinRT
+#if !WinRT && !XFORMS
             // when using d:DesignInstance, Blend tries to assign the DesignInstanceExtension class as the DataContext,
             // so here we get the actual ViewModel which is in the Instance property of DesignInstanceExtension
             if (View.InDesignMode) {
@@ -192,7 +211,13 @@
 
             Log.Info("Binding {0} and {1}.", view, viewModel);
 
-            if ((bool)view.GetValue(Micro.Bind.NoContextProperty)) {
+#if XFORMS
+            var noContext = Caliburn.Micro.Xamarin.Forms.Bind.NoContextProperty;
+#else
+            var noContext = Caliburn.Micro.Bind.NoContextProperty;
+#endif
+
+            if ((bool)view.GetValue(noContext)) {
                 Action.SetTargetWithoutContext(view, viewModel);
             }
             else {
@@ -233,8 +258,11 @@
                 viewModelType = viewModelTypeProvider.GetCustomType();
             }
 #endif
-
+#if XFORMS
+            IEnumerable<FrameworkElement> namedElements = new List<FrameworkElement>();
+#else
             var namedElements = BindingScope.GetNamedElements(element);
+#endif
 #if SILVERLIGHT
             namedElements.Apply(x => x.SetValue(
                 View.IsLoadedProperty,
